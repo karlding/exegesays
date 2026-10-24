@@ -7,6 +7,18 @@ authors = [
     { name = "Karl Ding", email = "karlding@users.noreply.github.com" }
 ]
 requires-python = ">=3.12,<3.13"
+dependencies = [
+    "huggingface_hub",
+    "mlx-lm",
+    "numpy",
+    "sherpa-onnx==1.13.8",
+    "sherpa-onnx-core==1.13.8",
+    "sounddevice",
+]
+
+
+[dependency-groups]
+dev = ["pytest"]
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
