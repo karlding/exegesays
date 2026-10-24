@@ -1,0 +1,13 @@
+[project]
+name = "exegesays"
+version = "0.1.0"
+description = "Listen for Mandarin or English and print a local translation."
+readme = "README.md"
+authors = [
+    { name = "Karl Ding", email = "karlding@users.noreply.github.com" }
+]
+requires-python = ">=3.12,<3.13"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
