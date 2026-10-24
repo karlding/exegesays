@@ -16,6 +16,8 @@ dependencies = [
     "sounddevice",
 ]
 
+[project.scripts]
+exegesays = "exegesays.__main__:main"
 
 [dependency-groups]
 dev = ["pytest"]
