@@ -8,7 +8,6 @@ authors = [
 ]
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "huggingface_hub",
     "mlx-lm",
     "numpy",
     "sherpa-onnx==1.13.8",
@@ -21,6 +20,7 @@ exegesays = "exegesays.__main__:main"
 
 [dependency-groups]
 dev = ["pytest"]
+download = ["huggingface_hub"]
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]

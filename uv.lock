@@ -70,7 +70,6 @@ name = "exegesays"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "huggingface-hub" },
     { name = "mlx-lm" },
     { name = "numpy" },
     { name = "sherpa-onnx" },
@@ -82,10 +81,12 @@ dependencies = [
 dev = [
     { name = "pytest" },
 ]
+download = [
+    { name = "huggingface-hub" },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "huggingface-hub" },
     { name = "mlx-lm" },
     { name = "numpy" },
     { name = "sherpa-onnx", specifier = "==1.13.8" },
@@ -95,6 +96,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest" }]
+download = [{ name = "huggingface-hub" }]
 
 [[package]]
 name = "filelock"

@@ -13,9 +13,7 @@ Each line is translated on its own, and tokens print as they are generated. If t
 This project uses Python 3.12.
 
 ```bash
-uv sync --all-groups
-
-# Download the speech models
+uv sync --group download
 uv run python scripts/download_models.py
 ```
 

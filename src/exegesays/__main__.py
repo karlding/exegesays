@@ -61,7 +61,7 @@ def main() -> None:
         for path in missing:
             print(f"  {path}", file=sys.stderr)
         print(
-            "Download them with: uv run python scripts/download_models.py",
+            "Download them with: uv run --group download python scripts/download_models.py",
             file=sys.stderr,
         )
         raise SystemExit(1)
