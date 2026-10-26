@@ -21,6 +21,10 @@ def vad_path() -> Path:
     return models_dir() / "silero_vad.onnx"
 
 
+def speaker_embedding_path() -> Path:
+    return models_dir() / "speaker_embedding.onnx"
+
+
 def sense_voice_dir() -> Path:
     return models_dir() / "sense-voice"
 
@@ -39,6 +43,7 @@ def translator_ready(path: Path | None = None) -> bool:
 def missing_model_files() -> list[Path]:
     required = [
         vad_path(),
+        speaker_embedding_path(),
         sense_voice_dir() / "model.int8.onnx",
         sense_voice_dir() / "tokens.txt",
     ]

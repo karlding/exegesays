@@ -15,6 +15,7 @@ from exegesays.context import HISTORY_LIMIT
 from exegesays.endpoint import TAIL_SAMPLES
 from exegesays.mandarin import extract_kept
 from exegesays.output import TranslationWriter
+from exegesays.speaker import blend_anchor, same_speaker, voiced
 
 _STOP = object()
 _SAMPLE_RATE = 16000
@@ -81,6 +82,94 @@ class TranslationWorker:
             self._ready.set()
 
 
+class SpeakerWorker:
+    def __init__(self, loader: Callable[[], Any]) -> None:
+        self._loader = loader
+        self._queue: queue.Queue[Any] = queue.Queue()
+        self._results: queue.Queue[tuple[int, bool, np.ndarray]] = queue.Queue()
+        self._ready = threading.Event()
+        self._error: BaseException | None = None
+        self._epoch = 0
+        self._thread = threading.Thread(
+            target=self._main,
+            name="exegesays-spk",
+            daemon=True,
+        )
+
+    def start(self, timeout: float | None = None) -> None:
+        self._thread.start()
+        if timeout is None:
+            return
+        if not self._ready.wait(timeout=timeout):
+            raise SystemExit("Speaker embedder did not start.")
+        self.raise_if_failed()
+
+    def submit(self, samples: np.ndarray) -> None:
+        self.raise_if_failed()
+        self._queue.put(("embed", self._epoch, _stable_audio(samples)))
+
+    def reset(self) -> None:
+        self.raise_if_failed()
+        self._epoch += 1
+        self._queue.put(("reset", self._epoch, None))
+
+    def poll(self) -> tuple[bool, np.ndarray] | None:
+        self.raise_if_failed()
+        while True:
+            try:
+                epoch, same, snapshot = self._results.get_nowait()
+            except queue.Empty:
+                return None
+            if epoch == self._epoch:
+                return same, snapshot
+
+    def close(self, timeout: float = 120) -> None:
+        self._queue.put(_STOP)
+        self._thread.join(timeout=timeout)
+        self.raise_if_failed()
+
+    def raise_if_failed(self) -> None:
+        if self._error is not None:
+            raise SystemExit(f"Speaker embedder failed: {self._error}") from self._error
+
+    def _main(self) -> None:
+        try:
+            embedder = self._loader()
+            anchor: np.ndarray | None = None
+            epoch = 0
+            self._ready.set()
+            while True:
+                item = self._queue.get()
+                if item is _STOP:
+                    break
+                kind, item_epoch, samples = item
+                if kind == "reset":
+                    epoch = item_epoch
+                    anchor = None
+                    continue
+                if item_epoch != epoch:
+                    continue
+                tail = samples[-TAIL_SAMPLES:]
+                if anchor is not None and not voiced(tail):
+                    self._results.put((epoch, True, samples))
+                    continue
+                embedding = embedder.embed(tail)
+                if embedding is None:
+                    self._results.put((epoch, True, samples))
+                    continue
+                if anchor is None:
+                    anchor = embedding
+                    self._results.put((epoch, True, samples))
+                    continue
+                matched = same_speaker(anchor, embedding)
+                if matched:
+                    anchor = blend_anchor(anchor, embedding)
+                self._results.put((epoch, matched, samples))
+        except Exception as exc:
+            self._error = exc
+            self._ready.set()
+
+
 class RecognizeWorker:
     def __init__(
         self,
@@ -99,7 +188,6 @@ class RecognizeWorker:
         self._verbose = verbose
         self._sample_rate = sample_rate
         self._queue: queue.Queue[Any] = queue.Queue()
-        self._tails: queue.Queue[tuple[bool, np.ndarray]] = queue.Queue()
         self._ready = threading.Event()
         self._error: BaseException | None = None
         self._thread = threading.Thread(
@@ -120,18 +208,12 @@ class RecognizeWorker:
         self.raise_if_failed()
         self._queue.put(("utterance", _stable_audio(samples)))
 
-    def submit_tail(self, samples: np.ndarray) -> None:
+    def commit(self) -> None:
         self.raise_if_failed()
-        self._queue.put(("tail", _stable_audio(samples)))
-
-    def poll_tail(self) -> tuple[bool, np.ndarray] | None:
-        self.raise_if_failed()
-        try:
-            return self._tails.get_nowait()
-        except queue.Empty:
-            return None
+        self._queue.put(("commit", None))
 
     def close(self, timeout: float = 120) -> None:
+        self._queue.put(("commit", None))
         self._queue.put(_STOP)
         self._thread.join(timeout=timeout)
         self.raise_if_failed()
@@ -143,33 +225,37 @@ class RecognizeWorker:
     def _main(self) -> None:
         try:
             recognizer = self._loader()
+            pending: list[str] = []
             self._ready.set()
             while True:
                 item = self._queue.get()
                 if item is _STOP:
+                    self._flush(pending)
                     break
                 kind, samples = item
-                if kind == "tail":
-                    self._tails.put(self._transcribe_tail(recognizer, samples))
-                else:
-                    self._transcribe_utterance(recognizer, samples)
+                if kind == "commit":
+                    self._flush(pending)
+                    continue
+                self._transcribe_utterance(recognizer, samples, pending)
         except Exception as exc:
             self._error = exc
             self._ready.set()
 
-    def _transcribe_utterance(self, recognizer: Any, samples: np.ndarray) -> None:
+    def _transcribe_utterance(
+        self, recognizer: Any, samples: np.ndarray, pending: list[str]
+    ) -> None:
         kept = self._kept(recognizer, samples, verbose=True)
-        if not kept:
+        if kept:
+            pending.append(kept)
+
+    def _flush(self, pending: list[str]) -> None:
+        if not pending:
             return
+        kept = _join_kept(pending, self._keep)
+        pending.clear()
         self._translator.submit(
             kept, show_source=self._show_source, verbose=self._verbose
         )
-
-    def _transcribe_tail(
-        self, recognizer: Any, samples: np.ndarray
-    ) -> tuple[bool, np.ndarray]:
-        kept = self._kept(recognizer, samples[-TAIL_SAMPLES:], verbose=False)
-        return bool(kept), samples
 
     def _kept(self, recognizer: Any, samples: np.ndarray, *, verbose: bool) -> str:
         if samples.size == 0:
@@ -190,6 +276,13 @@ class RecognizeWorker:
                 label = "Mandarin" if self._keep == "zh" else "English"
                 _status(f"Ignored (no {label} kept)")
         return kept
+
+
+def _join_kept(parts: list[str], keep: str) -> str:
+    cleaned = [part.strip() for part in parts if part.strip()]
+    if keep == "en":
+        return " ".join(cleaned)
+    return "".join(cleaned)
 
 
 def _stable_audio(samples: np.ndarray) -> np.ndarray:

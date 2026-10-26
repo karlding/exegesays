@@ -1,4 +1,4 @@
-"""End an utterance when speech leaves the source language, without waiting for silence."""
+"""End an utterance when the speaker changes, without waiting for silence."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from dataclasses import dataclass
 SAMPLE_RATE = 16000
 TAIL_SECONDS = 1.0
 CHECK_SECONDS = 0.4
-NON_MANDARIN_CHECKS = 2
+CHANGE_CHECKS = 3
 MIN_PREFIX_SECONDS = 0.35
+TURN_HOLD_SECONDS = 1.0
 
 TAIL_SAMPLES = int(TAIL_SECONDS * SAMPLE_RATE)
 CHECK_SAMPLES = int(CHECK_SECONDS * SAMPLE_RATE)
@@ -46,19 +47,19 @@ class SpeechCursor:
 
 
 @dataclass
-class LanguageSwitch:
-    """Track source-language speech, then a run of other speech."""
+class SpeakerChange:
+    """Track one speaker, then a run of a different voice."""
 
-    saw_source: bool = False
-    non_source_streak: int = 0
+    saw_speaker: bool = False
+    other_streak: int = 0
     last_check_samples: int = 0
-    source_end_samples: int = 0
+    speaker_end_samples: int = 0
 
     def reset(self) -> None:
-        self.saw_source = False
-        self.non_source_streak = 0
+        self.saw_speaker = False
+        self.other_streak = 0
         self.last_check_samples = 0
-        self.source_end_samples = 0
+        self.speaker_end_samples = 0
 
     def ready_for_check(self, current_samples: int) -> bool:
         if current_samples < TAIL_SAMPLES:
@@ -68,18 +69,18 @@ class LanguageSwitch:
     def mark_checked(self, end_samples: int) -> None:
         self.last_check_samples = end_samples
 
-    def note_tail(self, is_source: bool, end_samples: int) -> bool:
-        """Return True when the source language has stopped and translation should start."""
+    def note_tail(self, same_speaker: bool, end_samples: int) -> bool:
+        """Return True when the original speaker has stopped and translation should start."""
         self.last_check_samples = end_samples
-        if is_source:
-            self.saw_source = True
-            self.non_source_streak = 0
-            self.source_end_samples = end_samples
+        if same_speaker:
+            self.saw_speaker = True
+            self.other_streak = 0
+            self.speaker_end_samples = end_samples
             return False
-        if not self.saw_source:
+        if not self.saw_speaker:
             return False
-        self.non_source_streak += 1
-        return self.non_source_streak >= NON_MANDARIN_CHECKS
+        self.other_streak += 1
+        return self.other_streak >= CHANGE_CHECKS
 
     def prefix_samples(self) -> int:
-        return max(self.source_end_samples, MIN_PREFIX_SAMPLES)
+        return max(self.speaker_end_samples, MIN_PREFIX_SAMPLES)

@@ -13,11 +13,12 @@ import numpy as np
 import sherpa_onnx
 import sounddevice as sd
 
-from exegesays.endpoint import LanguageSwitch, SpeechCursor
-from exegesays.paths import sense_voice_dir, translator_dir, vad_path
+from exegesays.endpoint import TURN_HOLD_SECONDS, SpeakerChange, SpeechCursor
+from exegesays.paths import sense_voice_dir, speaker_embedding_path, translator_dir, vad_path
 from exegesays.recognize import Recognizer
+from exegesays.speaker import SpeakerEmbedder
 from exegesays.translate import Translator
-from exegesays.worker import RecognizeWorker, TranslationWorker
+from exegesays.worker import RecognizeWorker, SpeakerWorker, TranslationWorker
 
 SAMPLE_RATE = 16000
 
@@ -64,8 +65,12 @@ def run(
         verbose=verbose,
         sample_rate=SAMPLE_RATE,
     )
+    speaker = SpeakerWorker(
+        loader=lambda: SpeakerEmbedder(speaker_embedding_path()),
+    )
     translator.start()
     recognizer.start()
+    speaker.start()
     try:
         _run_session(
             device_index=device_index,
@@ -73,9 +78,11 @@ def run(
             verbose=verbose,
             keep=keep,
             recognizer=recognizer,
+            speaker=speaker,
         )
     finally:
         recognizer.close()
+        speaker.close()
         translator.close()
 
 
@@ -86,6 +93,7 @@ def _run_session(
     verbose: bool,
     keep: str,
     recognizer: RecognizeWorker,
+    speaker: SpeakerWorker,
 ) -> None:
     vad_config = sherpa_onnx.VadModelConfig()
     vad_config.silero_vad.model = str(vad_path())
@@ -108,10 +116,11 @@ def _run_session(
         name="exegesays-mic",
     )
     leftover = np.zeros((0,), dtype=np.float32)
-    switch = LanguageSwitch()
+    switch = SpeakerChange()
     cursor = SpeechCursor()
     tail_pending = False
     heard_speech = False
+    commit_at = 0.0
     peak = 0.0
     last_level = time.monotonic()
     flush_event = threading.Event()
@@ -134,11 +143,13 @@ def _run_session(
             raise SystemExit("Microphone capture did not start.")
         while True:
             recognizer.raise_if_failed()
+            speaker.raise_if_failed()
             flushed = _apply_tail_result(
-                vad, switch, cursor, recognizer, verbose, keep
+                vad, switch, cursor, speaker, recognizer, verbose
             )
             if flushed is not None:
                 tail_pending = False
+                commit_at = 0.0
                 if flushed:
                     heard_speech = True
             if flush_event.is_set():
@@ -149,10 +160,12 @@ def _run_session(
                     window_size,
                     switch,
                     cursor,
+                    speaker,
                     recognizer,
                     verbose,
                 )
                 tail_pending = False
+                commit_at = 0.0
                 heard_speech = True
             try:
                 kind, payload = audio_queue.get(timeout=0.05)
@@ -160,9 +173,10 @@ def _run_session(
                 if not proc.is_alive():
                     raise SystemExit("Microphone capture stopped unexpectedly.")
                 if _queue_tail_check(
-                    vad, switch, cursor, recognizer, tail_pending
+                    vad, switch, cursor, speaker, tail_pending
                 ):
                     tail_pending = True
+                commit_at = _tick_hold_commit(vad, recognizer, commit_at)
                 if (
                     verbose
                     and not heard_speech
@@ -188,20 +202,26 @@ def _run_session(
             while buf.size - offset >= window_size:
                 vad.accept_waveform(buf[offset : offset + window_size])
                 offset += window_size
-                if _drain_completed_speech(vad, switch, cursor, recognizer):
+                if _drain_completed_speech(
+                    vad, switch, cursor, speaker, recognizer
+                ):
                     heard_speech = True
+                    tail_pending = False
+                    commit_at = time.monotonic() + TURN_HOLD_SECONDS
                 _observe_speech(cursor, vad, window_size)
                 flushed = _apply_tail_result(
-                    vad, switch, cursor, recognizer, verbose, keep
+                    vad, switch, cursor, speaker, recognizer, verbose
                 )
                 if flushed is not None:
                     tail_pending = False
+                    commit_at = 0.0
                     if flushed:
                         heard_speech = True
                 if _queue_tail_check(
-                    vad, switch, cursor, recognizer, tail_pending
+                    vad, switch, cursor, speaker, tail_pending
                 ):
                     tail_pending = True
+                commit_at = _tick_hold_commit(vad, recognizer, commit_at)
             leftover = buf[offset:]
     finally:
         stop_event.set()
@@ -280,8 +300,9 @@ def _watch_enter(flush_event: threading.Event) -> None:
 
 def _drain_completed_speech(
     vad: sherpa_onnx.VoiceActivityDetector,
-    switch: LanguageSwitch,
+    switch: SpeakerChange,
     cursor: SpeechCursor,
+    speaker: SpeakerWorker,
     recognizer: RecognizeWorker,
 ) -> bool:
     handled = False
@@ -290,6 +311,7 @@ def _drain_completed_speech(
         vad.pop()
         switch.reset()
         cursor.reset()
+        speaker.reset()
         if segment.size:
             recognizer.submit_utterance(segment)
             handled = True
@@ -300,8 +322,9 @@ def _dump_buffer(
     vad: sherpa_onnx.VoiceActivityDetector,
     leftover: np.ndarray,
     window_size: int,
-    switch: LanguageSwitch,
+    switch: SpeakerChange,
     cursor: SpeechCursor,
+    speaker: SpeakerWorker,
     recognizer: RecognizeWorker,
     verbose: bool,
 ) -> np.ndarray:
@@ -312,12 +335,12 @@ def _dump_buffer(
         for index in range(0, leftover.size, window_size):
             vad.accept_waveform(leftover[index : index + window_size])
         leftover = np.zeros((0,), dtype=np.float32)
-    handled = _drain_completed_speech(vad, switch, cursor, recognizer)
+    handled = _drain_completed_speech(vad, switch, cursor, speaker, recognizer)
     try:
         vad.flush()
     except Exception:
         pass
-    handled = _drain_completed_speech(vad, switch, cursor, recognizer) or handled
+    handled = _drain_completed_speech(vad, switch, cursor, speaker, recognizer) or handled
     if not handled:
         samples = _current_speech(vad)
         if samples.size:
@@ -327,12 +350,27 @@ def _dump_buffer(
             handled = True
     elif verbose:
         _status("Enter: flushed speech")
+    recognizer.commit()
     vad.reset()
     switch.reset()
     cursor.reset()
+    speaker.reset()
     if verbose and not handled:
         _status("Enter: no speech in the buffer")
     return leftover
+
+
+def _tick_hold_commit(
+    vad: sherpa_onnx.VoiceActivityDetector,
+    recognizer: RecognizeWorker,
+    commit_at: float,
+) -> float:
+    if vad.is_speech_detected():
+        return 0.0
+    if commit_at and time.monotonic() >= commit_at:
+        recognizer.commit()
+        return 0.0
+    return commit_at
 
 
 def _observe_speech(
@@ -349,9 +387,9 @@ def _observe_speech(
 
 def _queue_tail_check(
     vad: sherpa_onnx.VoiceActivityDetector,
-    switch: LanguageSwitch,
+    switch: SpeakerChange,
     cursor: SpeechCursor,
-    recognizer: RecognizeWorker,
+    speaker: SpeakerWorker,
     pending: bool,
 ) -> bool:
     if pending or not vad.is_speech_detected():
@@ -362,33 +400,35 @@ def _queue_tail_check(
     cursor.resync(samples.size)
     if not switch.ready_for_check(samples.size):
         return False
-    recognizer.submit_tail(samples)
+    speaker.submit(samples)
     switch.mark_checked(samples.size)
     return True
 
 
 def _apply_tail_result(
     vad: sherpa_onnx.VoiceActivityDetector,
-    switch: LanguageSwitch,
+    switch: SpeakerChange,
     cursor: SpeechCursor,
+    speaker: SpeakerWorker,
     recognizer: RecognizeWorker,
     verbose: bool,
-    keep: str,
 ) -> bool | None:
-    item = recognizer.poll_tail()
+    item = speaker.poll()
     if item is None:
         return None
-    is_source, snapshot = item
-    if not switch.note_tail(is_source, snapshot.size):
+    same_voice, snapshot = item
+    if not switch.note_tail(same_voice, snapshot.size):
         return False
     prefix = snapshot[: switch.prefix_samples()]
     if verbose:
-        _status(f"Speech left {_source_label(keep)}; translating now")
+        _status("Speaker changed; translating now")
     if prefix.size:
         recognizer.submit_utterance(prefix)
+    recognizer.commit()
     vad.reset()
     switch.reset()
     cursor.reset()
+    speaker.reset()
     return True
 
 

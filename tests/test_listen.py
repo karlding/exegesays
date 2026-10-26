@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from exegesays.endpoint import CHECK_SAMPLES, TAIL_SAMPLES, LanguageSwitch, SpeechCursor
+from exegesays.endpoint import CHECK_SAMPLES, TAIL_SAMPLES, SpeakerChange, SpeechCursor
 from exegesays.listen import _observe_speech, _queue_tail_check
 
 WINDOW = 512
@@ -32,26 +32,26 @@ class _Vad:
         return SimpleNamespace(samples=self.samples)
 
 
-class _Recognizer:
+class _Speaker:
     def __init__(self) -> None:
         self.tails: list[int] = []
 
-    def submit_tail(self, samples: np.ndarray) -> None:
+    def submit(self, samples: np.ndarray) -> None:
         self.tails.append(int(samples.size))
 
 
 def test_tail_check_reads_samples_on_the_check_interval() -> None:
     vad = _Vad()
-    switch = LanguageSwitch()
+    switch = SpeakerChange()
     cursor = SpeechCursor()
-    recognizer = _Recognizer()
+    speaker = _Speaker()
     windows = (TAIL_SAMPLES + CHECK_SAMPLES * 2) // WINDOW
     for _ in range(windows):
         vad.grow(WINDOW)
         _observe_speech(cursor, vad, WINDOW)
-        _queue_tail_check(vad, switch, cursor, recognizer, pending=False)
+        _queue_tail_check(vad, switch, cursor, speaker, pending=False)
     # The sample list is read once to seed the cursor, then once per 0.4s check.
     # 56 windows would previously have read the list 56 times.
     assert windows == 56
-    assert vad.reads == 1 + len(recognizer.tails)
-    assert recognizer.tails == [16384, 23040]
+    assert vad.reads == 1 + len(speaker.tails)
+    assert speaker.tails == [16384, 23040]

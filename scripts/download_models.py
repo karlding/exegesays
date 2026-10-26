@@ -1,4 +1,4 @@
-"""Download Silero VAD, SenseVoice, and Hy-MT2 into models/."""
+"""Download Silero VAD, speaker embeddings, SenseVoice, and Hy-MT2 into models/."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from huggingface_hub import snapshot_download
 from exegesays.paths import (
     models_dir,
     sense_voice_dir,
+    speaker_embedding_path,
     translator_dir,
     translator_ready,
     vad_path,
@@ -21,6 +22,11 @@ from exegesays.paths import (
 
 VAD_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+)
+SPEAKER_EMBEDDING_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speaker-recongition-models/"
+    "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 )
 SENSE_VOICE_URLS = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
@@ -35,6 +41,7 @@ _USER_AGENT = "exegesays"
 def main() -> None:
     models_dir().mkdir(parents=True, exist_ok=True)
     _download_file(VAD_URL, vad_path())
+    _download_file(SPEAKER_EMBEDDING_URL, speaker_embedding_path())
     _download_sense_voice()
     _download_translator()
     print("Models are ready.")
