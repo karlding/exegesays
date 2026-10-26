@@ -10,7 +10,13 @@ import sherpa_onnx
 
 
 class Recognizer:
-    def __init__(self, model: Path, tokens: Path, num_threads: int = 2) -> None:
+    def __init__(
+        self,
+        model: Path,
+        tokens: Path,
+        num_threads: int = 2,
+        language: str = "auto",
+    ) -> None:
         kwargs = {
             "model": str(model),
             "tokens": str(tokens),
@@ -22,7 +28,8 @@ class Recognizer:
             sherpa_onnx.OfflineRecognizer.from_sense_voice
         ).parameters
         if "language" in parameters:
-            kwargs["language"] = "auto"
+            # auto LID often labels Chinese-accented English as Mandarin.
+            kwargs["language"] = language
         self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(**kwargs)
 
     def transcribe(self, samples: np.ndarray, sample_rate: int) -> tuple[str, str]:

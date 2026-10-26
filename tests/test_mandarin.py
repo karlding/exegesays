@@ -50,3 +50,9 @@ def test_pure_mandarin_is_ignored_in_english_mode() -> None:
 
 def test_chinese_inside_english_is_removed() -> None:
     assert extract_english("I met 王伟 yesterday", "en") == "I met yesterday"
+
+
+def test_accented_english_transcribed_as_chinese_is_dropped() -> None:
+    # SenseVoice auto-detect often emits Han for Chinese-accented English.
+    # The English-keep filter cannot recover English from that transcript.
+    assert extract_english("我想去商店买咖啡", "zh") == ""

@@ -56,6 +56,7 @@ def run(
         loader=lambda: Recognizer(
             model=sense_voice_dir() / "model.int8.onnx",
             tokens=sense_voice_dir() / "tokens.txt",
+            language="en" if keep == "en" else "auto",
         ),
         keep=keep,
         translator=translator,
